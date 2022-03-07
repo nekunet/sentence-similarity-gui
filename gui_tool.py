@@ -2,7 +2,9 @@ import threading
 
 import gensim
 import MeCab
+import numpy as np
 import PySimpleGUI as sg
+from scipy import spatial
 
 
 def set_dpi_awareness():
@@ -18,7 +20,7 @@ def set_dpi_awareness():
 
 def split_into_words(text):
     """
-    configから入力ファイル群を読み込む関数
+    テキストから単語に分割する関数
 
     Args:
         text: 入力文
@@ -34,7 +36,7 @@ def split_into_words(text):
     while node:
         #print(node.surface, node.feature)
         meta = node.feature.split(",")[0]
-        if meta == "名詞":
+        if meta == "名詞" or meta == "形容詞" or meta == "動詞":
             words.append(node.surface)
         node = node.next
 
@@ -61,33 +63,14 @@ def read_file(filename):
     return lines
 
 
-def make_word_pairs(words1, words2):
+def calc_similarity_score(model_file, words1, words2):
     """
-    ワードのペアを作る関数
-
-    Args:
-        words1: 単語のリスト1
-        words2: 単語のリスト2 
-    
-    Returns:
-        word_pairs: 単語のペアリスト
-    """
-    word_pairs = []
-
-    for word1 in words1:
-        for word2 in words2:
-            word_pairs.append([word1, word2])
-
-    return word_pairs
-
-
-def calc_similarity_score(model_file, word_pairs):
-    """
-    単語のペアから類似度を計算する関数
+    単語ベクトルの相加平均から類似度を計算する関数
 
     Args:
         model_file: word2vecのmodelファイル（バイナリ）
-        word_pairs: 単語のペアリスト
+        words1: 単語リスト1
+        words2: 単語リスト2
 
     Returns:
         similarity_score: 類似度スコア
@@ -95,20 +78,34 @@ def calc_similarity_score(model_file, word_pairs):
     # modelをバイナリモードで読み込む
     model = gensim.models.KeyedVectors.load_word2vec_format(model_file, binary=True)
 
+    # 特徴ベクトルの入れ物を初期化
+    num_features = model.vector_size
+    feature_vec1 = np.zeros((num_features,), dtype="float32")
+    feature_vec2 = np.zeros((num_features,), dtype="float32")
+
     # モデルに含まれている単語
     vocab_list = list(model.index_to_key)
+    
+    cnt = 0
+    for word in words1:
+        if word in vocab_list:
+            cnt += 1
+            feature_vec1 = np.add(feature_vec1, model[word])
+    
+    if cnt > 0:
+        feature_vec1 = np.divide(feature_vec1, cnt)
 
     cnt = 0
-    similarity_score = 0 
-
-    for word1, word2 in word_pairs:
-        # 2つの単語がモデルに含まれている場合のみ処理
-        if (word1 in vocab_list) and (word2 in vocab_list):
-            similarity_score += model.similarity(word1, word2)
+    for word in words2:
+        if word in vocab_list:
             cnt += 1
+            feature_vec2 = np.add(feature_vec2, model[word])
     
-    if cnt != 0:
-        similarity_score /= cnt
+    if cnt > 0:
+        feature_vec2 = np.divide(feature_vec2, cnt)
+    
+    # 1からベクトル間の距離を引くことで、コサイン類似度を計算
+    similarity_score = round(1 - spatial.distance.cosine(feature_vec1, feature_vec2), 2)
 
     return similarity_score
 
@@ -176,10 +173,8 @@ def run(lock, window, input_txt1, input_txt2, model_file, threshold, output_txt)
         for line2 in lines2:
             words1 = split_into_words(line1)
             words2 = split_into_words(line2)
-
-            word_pairs = make_word_pairs(words1, words2)
             
-            similarity_score = calc_similarity_score(model_file, word_pairs)
+            similarity_score = calc_similarity_score(model_file, words1, words2)
 
             # 結果をリストに格納
             result.append([similarity_score, line1, line2])
